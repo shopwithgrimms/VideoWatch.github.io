@@ -1,1 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watch Queue</title>
+<style>
+  :root { --bg:#0f0f12; --card:#1a1a20; --text:#f2f2f5; --muted:#9a9aa5; --accent:#ff3d3d; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.3rem; margin: 8px 0 16px; }
+  .player { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:12px; overflow:hidden; }
+  .player > div, .player iframe { position:absolute; inset:0; width:100%; height:100%; }
+  .empty { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); }
+  form { display:flex; gap:8px; margin:16px 0; }
+  input { flex:1; padding:12px; border-radius:10px; border:1px solid #333; background:var(--card); color:var(--text); font-size:1rem; min-width:0; }
+  button { padding:12px 16px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; font-size:1rem; }
+  button.ghost { background:transparent; color:var(--muted); padding:6px 10px; }
+  h2 { font-size:1rem; color:var(--muted); margin:20px 0 8px; display:flex; justify-content:space-between; align-items:center; }
+  ul { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+  li { display:flex; align-items:center; gap:10px; background:var(--card); border-radius:10px; padding:8px; }
+  li.now { outline:2px solid var(--accent); }
+  li img { width:96px; aspect-ratio:16/9; object-fit:cover; border-radius:6px; cursor:pointer; flex:none; }
+  li .t { flex:1; min-width:0; cursor:pointer; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; font-size:.95rem; }
+  .msg { color:var(--muted); font-size:.85rem; min-height:1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>▶ Watch Queue</h1>
+  <div class="player">
+    <div id="yt"></div>
+    <div class="empty" id="empty">Add a YouTube link below to start</div>
+  </div>
 
+  <form id="form">
+    <input id="url" placeholder="Paste a YouTube link…" autocomplete="off">
+    <button type="submit">Add</button>
+  </form>
+  <div class="msg" id="msg"></div>
+
+  <h2>Up next <button class="ghost" id="clear">Clear all</button></h2>
+  <ul id="list"></ul>
+</main>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const KEY = "watch-queue-v1";
+let state = load();   // { queue: [{id,title}], index: number }
+let player, ready = false;
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || { queue: [], index: -1 }; }
+  catch { return { queue: [], index: -1 }; }
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
+
+function parseId(s) {
+  s = s.trim();
+  if (/^[\w-]{11}$/.test(s)) return s;
+  try {
+    const u = new URL(s);
+    if (u.hostname.includes("youtu.be")) return u.pathname.slice(1, 12);
+    if (u.searchParams.get("v")) return u.searchParams.get("v");
+    const m = u.pathname.match(/\/(embed|shorts|live)\/([\w-]{11})/);
+    if (m) return m[2];
+  } catch {}
+  return null;
+}
+
+async function getTitle(id) {
+  try {
+    const r = await fetch("https://noembed.com/embed?url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + id));
+    const j = await r.json();
+    return j.title || id;
+  } catch { return id; }
+}
+
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player("yt", {
+    width: "100%", height: "100%",
+    playerVars: { playsinline: 1, rel: 0 },
+    events: {
+      onReady: () => { ready = true; if (state.index >= 0) cue(state.index); },
+      onStateChange: e => { if (e.data === YT.PlayerState.ENDED) next(); }
+    }
+  });
+}
+
+function cue(i) {
+  const v = state.queue[i];
+  if (!v || !ready) return;
+  player.cueVideoById(v.id);
+}
+function play(i) {
+  const v = state.queue[i];
+  if (!v) return;
+  state.index = i; save();
+  document.getElementById("empty").style.display = "none";
+  if (ready) player.loadVideoById(v.id);
+  render();
+}
+function next() {
+  if (state.index + 1 < state.queue.length) play(state.index + 1);
+}
+
+function render() {
+  document.getElementById("empty").style.display = state.queue.length ? "none" : "grid";
+  const ul = document.getElementById("list");
+  ul.innerHTML = "";
+  state.queue.forEach((v, i) => {
+    const li = document.createElement("li");
+    if (i === state.index) li.className = "now";
+    li.innerHTML = `<img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="">
+      <div class="t"></div><button class="ghost" title="Remove">✕</button>`;
+    li.querySelector(".t").textContent = (i === state.index ? "▶ " : "") + v.title;
+    li.querySelector("img").onclick = li.querySelector(".t").onclick = () => play(i);
+    li.querySelector("button").onclick = () => {
+      state.queue.splice(i, 1);
+      if (i < state.index) state.index--;
+      else if (i === state.index) state.index = Math.min(i, state.queue.length - 1) , state.index >= 0 ? play(state.index) : (ready && player.stopVideo());
+      save(); render();
+    };
+    ul.appendChild(li);
+  });
+}
+
+document.getElementById("form").onsubmit = async e => {
+  e.preventDefault();
+  const input = document.getElementById("url"), msg = document.getElementById("msg");
+  const id = parseId(input.value);
+  if (!id) { msg.textContent = "That doesn't look like a YouTube link."; return; }
+  msg.textContent = "";
+  input.value = "";
+  const title = await getTitle(id);
+  state.queue.push({ id, title });
+  save();
+  if (state.index < 0) play(0); else render();
+};
+
+document.getElementById("clear").onclick = () => {
+  if (!confirm("Clear the whole queue?")) return;
+  state = { queue: [], index: -1 }; save();
+  if (ready) player.stopVideo();
+  render();
+};
+
+render();
+</script>
+</body>
+</html>
